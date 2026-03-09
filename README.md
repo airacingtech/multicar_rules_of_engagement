@@ -67,7 +67,7 @@ uint8 PASS_STATE_SUSPENDED = 7
 - `request_ttl_ms` is applied against `header.stamp`; receivers compute `deadline = header.stamp + request_ttl_ms` and revert to `PASS_STATE_IDLE` after that time.
 
 ### Autonomous multi-car state machine
-Each vehicle runs the same finite-state machine keyed by `pass_state`. The attacker is the car that issued the current request, and the defender is the `target_car_id`. The FSM governs overtaking, yielding, and formation behaviour without manual input and scales to multiple competitors through zone reservations and queued requests.
+Each vehicle runs the same finite-state machine keyed by `pass_state`. The attacker is the car that issued the current request, and the defender is the `target_car_id`. The FSM governs overtaking, yielding, and formation behaviour without manual input. In Phase 0 the FSM handles a single attacker-defender pair; later phases scale to multiple competitors through zone reservations and queued requests.
 
 #### Attacker state diagram
 ```mermaid
@@ -116,7 +116,7 @@ stateDiagram-v2
 ```
 
 #### State semantics
-- `PASS_STATE_IDLE`: No active request; vehicles maintain nominal race pace and formation spacing.
+- `PASS_STATE_IDLE`: No active request; vehicles maintain nominal race/supervised practice pace and formation spacing.
 - `PASS_STATE_REQUESTING`: Attacker has advertised a pass and awaits acknowledgement while both cars hold formation at nominal speed.
 - `PASS_STATE_ACKNOWLEDGED`: Request matched with acknowledgement; the zone is reserved and both cars stay staged at nominal speed until the defender reaches the zone entry.
 - `PASS_STATE_EXECUTING`: The defender is inside the zone on the on the defender line, attacker vehicle may now overtake.
@@ -154,7 +154,7 @@ stateDiagram-v2
 | Acknowledged | Attacker heartbeat lost before entry | Suspended | Maintain current lane and nominal speed, rebroadcast acknowledgement metadata until expiry. |
 | Prepping | Locked into the defender line, reduced to `yield_speed` (ready-flag) | Executing | Lock into defender line, reduce to `yield_speed`, maintain lane discipline. |
 | Prepping | Lost attacker hearbeast | Suspended | Freeze aproach, continue publishing prepping state until connectivity returns |
-| Executing | `PASS_STATE_COMPLETED` received and trailing gap safe | Completed | Re-accelerate to race pace, release reservation, return to formation. |
+| Executing | `PASS_STATE_COMPLETED` received and trailing gap safe | Completed | Re-accelerate to race/supervised practice pace, release reservation, return to formation. |
 | Executing | Clearance violation, hazard, or vehicle-state downgrade | Aborted | Follow abort profile in defender lane until cleared. |
 | Suspended | Heartbeat resumes before TTL expiry | Acknowledged | Resume staging with latest metadata. |
 | Suspended | TTL expires or race control cancels engagement | Idle | Release reservation, revert to formation mode. |
@@ -173,6 +173,46 @@ With only two cars on track, several N-vehicle concerns (queueing, mutual exclus
 - Abort lane discipline: Pass-zone configurations define the abort profile and lane assignments; both vehicles hold their current lanes (attacker in the passing lane, defender in the defender lane) until the zone clears.
 - Cool-down enforcement: After a completion or abort, both participants stay in `PASS_STATE_IDLE` for the shared cool-down window before a new pass may be requested.
 
+### Pit lane considerations (Phase 0)
+
+#### Filtering pit-lane vehicles from on-track passing logic
+- On-track vehicles use geofence filtering to determine whether a transponder report originates from a car on the active racing surface or in the pit lane.
+- Transponder reports from vehicles whose position falls within the pit lane geofence are excluded from passing logic. The on-track vehicle treats them as non-participants for coordination purposes.
+- No state change is required from pit-lane vehicles; position-based filtering is sufficient for Phase 0.
+
+#### Ego entering pit lane
+- When ego transitions onto the pit trajectory (pit entry), any active pass engagement must be aborted (`PASS_STATE_ABORTED`) before entering pit road.
+- Once on the pit trajectory, ego stops publishing coordination messages and reverts to `PASS_STATE_IDLE`.
+- Ego respects pit lane speed limits and is excluded from the passing protocol while in pit.
+
+#### Ego leaving pit lane
+- Ego must be in `PASS_STATE_IDLE` before exiting pit lane onto the racing surface.
+- After pit exit, ego resumes transponder coordination and may initiate or receive pass requests once it reaches a valid passing zone.
+- A cool-down period applies after pit exit before ego may issue a pass request, preventing immediate engagement while merging onto the racing surface.
+
+#### Simultaneous pit entry protocol
+When both vehicles intend to pit at the same time, a formal spacing protocol prevents conflicts in pit road and pit lane.
+
+**Pit intent signaling (belt-and-suspenders):**
+- A vehicle intending to pit broadcasts a pit intent indicator via the coordination message. For Phase 0, this reuses an existing field convention: the vehicle sets `pass_zone_id` to a reserved pit-zone identifier (defined in the track configuration) and `pass_state` to `PASS_STATE_IDLE`. A formal `pit_intent` field or `STATE_PITTING` vehicle state constant is proposed for Phase 1.
+- In addition to the explicit announcement, the trailing vehicle validates pit intent by checking whether the lead vehicle's transponder position enters the pit entrance geofence region.
+- Both signals must agree for the trailing vehicle to enter pit spacing mode. If the lead announces pit intent but its position does not enter the pit entrance geofence within a configurable timeout, the trailing vehicle ignores the announcement and resumes normal behavior.
+
+**Safe following distance in pit lane:**
+- When both vehicles are pitting, the trailing vehicle maintains a configurable minimum gap (e.g., 2 car lengths) behind the lead vehicle throughout the entire pit road and pit lane.
+- The trailing vehicle reduces to pit lane speed and uses ACC to hold the gap behind the lead.
+- The minimum gap applies from pit road entry through pit lane until the lead vehicle reaches its pit box and the trailing vehicle passes it or reaches its own box.
+- If the trailing vehicle's pit box is before the lead vehicle's pit box, normal pit lane behavior applies -- the trailing vehicle peels off into its box first.
+
+**Priority and ordering:**
+- The vehicle closer to the pit entrance (i.e., ahead on track) has priority to enter pit road first.
+- The trailing vehicle must not attempt to overtake in pit road or pit lane under any circumstances. Pit lane is single-file, no passing.
+- If the trailing vehicle reaches the pit entrance before the lead has cleared a safe distance, the trailing vehicle holds at the pit entrance boundary at pit crawl speed until the minimum gap is established.
+
+**Abort / cancel:**
+- If a vehicle that announced pit intent cancels (e.g., returns to the racing line before entering the pit entrance geofence), the trailing vehicle exits pit spacing mode and resumes normal on-track behavior.
+- Any active on-track pass engagement must be aborted (`PASS_STATE_ABORTED`) before either vehicle enters pit road (see [Ego entering pit lane](#ego-entering-pit-lane)).
+
 ### Emergency stop coordination
 - Emergency stops trigger only on a transition into `STATE_EMERGENCY_STOP`; each listener latches the initiating `car_id` and message `header.stamp` as the stop event.
 - Vehicles remain stopped until they receive a newer message from that initiator reporting a non-emergency state, or an explicit clear directive.
@@ -182,11 +222,20 @@ With only two cars on track, several N-vehicle concerns (queueing, mutual exclus
 - Every `pass_zone_id` carries a fail-safe abort profile and lane assignments so standard lane-keeping suffices.
 - When `PASS_STATE_ABORTED` is announced, both cars brake toward the abort target within 100 ms while holding their lanes if they are already inside the active pass zone; otherwise they maintain their current lanes at nominal speed until race control issues further instructions.
 - Trailing cars entering the zone after an abort message maintain their lanes and match the slowest vehicle ahead, blocking new passes until the zone clears.
-- Participants exchange `PASS_STATE_IDLE` messages with a re-entry flag once telemetry stabilises, then accelerate back to race pace while maintaining lane discipline.
+- Participants exchange `PASS_STATE_IDLE` messages with a re-entry flag once telemetry stabilises, then accelerate back to race/supervised practice pace while maintaining lane discipline.
 - If connectivity stays degraded, cars continue announcing `PASS_STATE_ABORTED` at least 5 Hz so observers know the zone remains restricted.
 
+### Stationary bogie on track (Phase 0)
+A bogie may stop on the racing surface (mechanical failure, spin, or crash) yet continue publishing `STATE_NOMINAL` because its software has not detected the fault. Phase 0 applies a conservative policy:
+
+- If a rival vehicle's transponder reports `STATE_NOMINAL` but its reported `vel` remains below a configurable threshold (e.g., < 0.5 m/s) for a sustained period, ego treats the situation as ambiguous.
+- **Ego does NOT attempt to pass a stationary bogie.** Ego holds formation behind the stopped vehicle at a safe following distance and awaits race control intervention.
+- If a pass was already in progress when the bogie became stationary, ego broadcasts `PASS_STATE_ABORTED` and follows the abort profile.
+- If the bogie is off the racing surface (position outside the track geofence) but still publishing, the geofence filter excludes it from coordination logic and ego proceeds normally along its trajectory.
+- Rationale: Without onboard perception to verify the bogie's actual state, passing a vehicle that claims nominal status but is not moving is unsafe. Perception-assisted state verification is deferred to Phase 1.
+
 #### Autonomy guarantees
-- Transitions rely only on telemetry, planner outputs, and the AVLT coordination message; no manual operator input is needed once the race starts.
+- Transitions rely only on telemetry, planner outputs, and the AVLT coordination message; no manual operator input is needed once the race/supervised practice starts.
 - Race control overrides (`STATE_CONTROLLED_STOP`[track red or vehicle red flag] or `STATE_EMERGENCY_STOP`[purple flag]) force an immediate move to `PASS_STATE_ABORTED`.
 - Connectivity-aware policies ensure cars falling outside the ~X m V2V envelope pause the manoeuvre in `PASS_STATE_SUSPENDED` or abort if reconnection misses the timeout, preventing blind passes.
 - Formal verification should confirm every path completes or aborts with a deterministic resolution so more than two cars cannot livelock in the same zone.
@@ -204,6 +253,10 @@ The next priority after Phase 0 is making the 2-vehicle system resilient to real
 - Abort propagation validation between both vehicles
 - Full cool-down enforcement with configurable timers
 - Formal verification that every FSM path terminates in `IDLE` or `ABORTED`
+- Stationary bogie detection with speed-threshold validation and configurable timeouts
+- Perception-assisted state verification (cross-check transponder state against observed behaviour)
+- Formal `pit_intent` field in AVLT Coordination message (or `STATE_PITTING` in Position message)
+- Pit lane spacing enforcement with configurable gap parameters
 
 ### Phase 2: N-Vehicle Support (work in progress)
 Phase 2 scales the system to three or more vehicles on track simultaneously. Details will be refined as Phase 1 matures.
@@ -219,4 +272,4 @@ Phase 2 scales the system to three or more vehicles on track simultaneously. Det
 
 ---
 
-[^race-control]: The safe-pass flow assumes an active human race control monitoring the event. Race control must be prepared to halt the field if the transponder system fails and to red-stop trailing cars when a leading transpondered vehicle leaves the track or stops unexpectedly. Teams should evaluate additional edge cases and recognise the system's limitations; they may run their own perception stacks, but cannot assume that other entrants do so. Participation requires a working ACC that respects the transponder-provided distances.
+[^race-control]: The safe-pass flow assumes an active human race control monitoring the race/supervised practice event. Race control must be prepared to halt the field if the transponder system fails and to red-stop trailing cars when a leading transpondered vehicle leaves the track or stops unexpectedly. Teams should evaluate additional edge cases and recognise the system's limitations; they may run their own perception stacks, but cannot assume that other entrants do so. Participation requires a working ACC that respects the transponder-provided distances.
