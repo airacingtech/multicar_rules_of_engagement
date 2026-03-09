@@ -149,7 +149,7 @@ stateDiagram-v2
 | --- | --- | --- | --- |
 | Idle | Valid request targeting defender, zone matches, defender `STATE_NOMINAL`, no higher-priority constraint, not already defending. Not trailing another vehicle. | Acknowledged | Broadcast `PASS_STATE_ACKNOWLEDGED`, reserve zone, begin staging.|
 | Idle | Hazard, emergency stop, or lane-integrity concern | Aborted | Broadcast `PASS_STATE_ABORTED`, hold lane at abort profile while awaiting clearance. |
-| Acknowledged | Defender enters the zone entry | Prepping | Reduce to `yield_speed`, and lock into the defender line.
+| Acknowledged | Defender enters the zone entry | Prepping | Reduce to `yield_speed`, and lock into the defender line. |
 | Acknowledged | Hazard prior to zone entry | Aborted | Broadcast `PASS_STATE_ABORTED`, hold lane and follow abort profile. |
 | Acknowledged | Attacker heartbeat lost before entry | Suspended | Maintain current lane and nominal speed, rebroadcast acknowledgement metadata until expiry. |
 | Prepping | Locked into the defender line, reduced to `yield_speed` (ready-flag) | Executing | Lock into defender line, reduce to `yield_speed`, maintain lane discipline. |
@@ -182,6 +182,7 @@ With only two cars on track, several N-vehicle concerns (queueing, mutual exclus
 - No state change is required from pit-lane vehicles; position-based filtering is sufficient for Phase 0.
 
 #### Ego entering pit lane
+- Before reaching the pit entrance, ego broadcasts pit intent via the coordination message (see [Simultaneous pit entry protocol](#simultaneous-pit-entry-protocol)) so the other vehicle can react early.
 - When ego transitions onto the pit trajectory (pit entry), any active pass engagement must be aborted (`PASS_STATE_ABORTED`) before entering pit road.
 - Once on the pit trajectory, ego reverts to `PASS_STATE_IDLE` and ceases publishing pass coordination messages. Ego continues publishing AVLT Position messages (including `lat`/`lon`/`vel`/`state`) so the other vehicle can track its pit lane position via geofence filtering.
 - Ego respects pit lane speed limits and is excluded from the passing protocol while in pit.
