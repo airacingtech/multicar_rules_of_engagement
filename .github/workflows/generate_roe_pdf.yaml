@@ -1,0 +1,53 @@
+name: Generate Rules of Engagement PDF
+
+on:
+  push:
+    branches: [main, phase_0]
+    paths:
+      - 'README.md'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'README.md'
+  workflow_dispatch:
+
+jobs:
+  generate-pdf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pandoc and LaTeX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc texlive-xetex texlive-latex-recommended texlive-fonts-recommended texlive-latex-extra
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install mermaid tools
+        run: |
+          npm install -g @mermaid-js/mermaid-cli
+          npm install -g mermaid-filter
+
+      - name: Generate PDF
+        run: |
+          pandoc README.md \
+            -o multicar_rules_of_engagement.pdf \
+            --from markdown+footnotes \
+            --pdf-engine=xelatex \
+            -F mermaid-filter \
+            --toc \
+            -V geometry:margin=1in \
+            -V documentclass=article \
+            -V title="Multicar Rules of Engagement" \
+            -V date="$(date +%Y-%m-%d)"
+
+      - name: Upload PDF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: multicar-rules-of-engagement-pdf
+          path: multicar_rules_of_engagement.pdf
+          retention-days: 90
