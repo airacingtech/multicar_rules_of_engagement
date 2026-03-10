@@ -1,0 +1,86 @@
+name: Generate Rules of Engagement PDF
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'README.md'
+  # pull_request:
+  #   branches: [main]
+  #   paths:
+  #     - 'README.md'
+  workflow_dispatch:
+
+jobs:
+  generate-pdf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pandoc and LaTeX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc texlive-xetex texlive-latex-recommended texlive-fonts-recommended texlive-latex-extra librsvg2-bin
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Chromium dependencies
+        run: sudo apt-get install -y chromium-browser
+
+      - name: Install mermaid tools
+        run: |
+          npm install -g @mermaid-js/mermaid-cli
+          npm install -g mermaid-filter
+
+      - name: Configure Puppeteer for CI
+        run: |
+          cat > /tmp/puppeteer-config.json << 'CONF'
+          {
+            "args": ["--no-sandbox", "--disable-setuid-sandbox"]
+          }
+          CONF
+
+      - name: Pre-render mermaid diagrams
+        run: |
+          mmdc -i README.md -o README.rendered.md \
+            -p /tmp/puppeteer-config.json \
+            -e png \
+            -b white
+
+      - name: Generate PDF
+        env:
+          PUPPETEER_CHROMIUM_REVISION: 1
+          MERMAID_FILTER_FORMAT: png
+          MERMAID_FILTER_THEME: default
+          MERMAID_FILTER_BACKGROUND: white
+        run: |
+          pandoc README.rendered.md \
+            -o multicar_rules_of_engagement.pdf \
+            --from markdown+footnotes \
+            --pdf-engine=xelatex \
+            --toc \
+            -V geometry:margin=1in \
+            -V documentclass=article \
+            -V title="Multicar Rules of Engagement" \
+            -V date="$(date +%Y-%m-%d)"
+
+      - name: Upload PDF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: multicar-rules-of-engagement-pdf
+          path: multicar_rules_of_engagement.pdf
+          retention-days: 90
+
+      - name: Create or update latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes 2>/dev/null || true
+          gh release create latest \
+            --title "Latest Rules of Engagement" \
+            --notes "Auto-generated PDF from the latest README.md on \`$(git rev-parse --short HEAD)\` ($(date +%Y-%m-%d))." \
+            --latest \
+            multicar_rules_of_engagement.pdf
