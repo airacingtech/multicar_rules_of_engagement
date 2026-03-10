@@ -82,36 +82,54 @@ Each vehicle runs the same finite-state machine keyed by `pass_state`. The attac
 ```mermaid
 stateDiagram-v2
     direction LR
-    [*] --> PASS_STATE_IDLE
-    PASS_STATE_IDLE --> PASS_STATE_REQUESTING: issue_request
-    PASS_STATE_REQUESTING --> PASS_STATE_IDLE: ttl_expired_or_no_ack
-    PASS_STATE_REQUESTING --> PASS_STATE_ACKNOWLEDGED: ack_received
-    PASS_STATE_REQUESTING --> PASS_STATE_ABORTED: heartbeat_loss_or_hazard
-    PASS_STATE_ACKNOWLEDGED --> PASS_STATE_EXECUTING: zone_entry_ready
-    PASS_STATE_ACKNOWLEDGED --> PASS_STATE_ABORTED: heartbeat_loss_or_hazard
-    PASS_STATE_EXECUTING --> PASS_STATE_COMPLETED: pass_clear
-    PASS_STATE_EXECUTING --> PASS_STATE_ABORTED: clearance_or_timeout
-    PASS_STATE_COMPLETED --> PASS_STATE_IDLE: cooldown_complete
-    PASS_STATE_ABORTED --> PASS_STATE_IDLE: abort_cleared
+
+    state "Idle" as IDLE
+    state "Requesting" as REQ
+    state "Acknowledged" as ACK
+    state "Executing" as EXEC
+    state "Completed" as DONE
+    state "Aborted" as ABORT
+
+    [*] --> IDLE
+    IDLE  --> REQ   : issue request
+    REQ   --> IDLE  : TTL expired / no ACK
+    REQ   --> ACK   : ACK received
+    REQ   --> ABORT : heartbeat loss or hazard
+    ACK   --> EXEC  : zone entry ready
+    ACK   --> ABORT : heartbeat loss or hazard
+    EXEC  --> DONE  : pass clear
+    EXEC  --> ABORT : clearance violation or timeout
+    DONE  --> IDLE  : cool-down complete
+    ABORT --> IDLE  : abort cleared
+
+    note right of ABORT : Race control override may<br/>force Aborted from any state
 ```
 
 #### Defender state diagram
 ```mermaid
 stateDiagram-v2
     direction LR
-    [*] --> PASS_STATE_IDLE
-    state "Prepping (internal)" as DEF_PREPPING
-    PASS_STATE_IDLE --> PASS_STATE_ACKNOWLEDGED: request_valid
-    PASS_STATE_IDLE --> PASS_STATE_ABORTED: hazard_override
-    PASS_STATE_ACKNOWLEDGED --> DEF_PREPPING: defender_enters_zone
-    PASS_STATE_ACKNOWLEDGED --> PASS_STATE_ABORTED: heartbeat_loss_or_hazard
-    DEF_PREPPING --> PASS_STATE_EXECUTING: yield_speed_and_lane_locked
-    DEF_PREPPING --> PASS_STATE_ABORTED: heartbeat_loss_or_hazard
-    PASS_STATE_EXECUTING --> PASS_STATE_COMPLETED: pass_clear
-    PASS_STATE_EXECUTING --> PASS_STATE_ABORTED: clearance_violation
-    PASS_STATE_COMPLETED --> PASS_STATE_IDLE: cooldown_complete
-    PASS_STATE_ABORTED --> PASS_STATE_IDLE: abort_cleared
-    %% Race control override may force PASS_STATE_ABORTED from any state
+
+    state "Idle" as IDLE
+    state "Acknowledged" as ACK
+    state "Prepping (internal)" as PREP
+    state "Executing" as EXEC
+    state "Completed" as DONE
+    state "Aborted" as ABORT
+
+    [*] --> IDLE
+    IDLE  --> ACK   : valid request received
+    IDLE  --> ABORT : hazard override
+    ACK   --> PREP  : defender enters zone
+    ACK   --> ABORT : heartbeat loss or hazard
+    PREP  --> EXEC  : yield speed & lane locked
+    PREP  --> ABORT : heartbeat loss or hazard
+    EXEC  --> DONE  : pass clear
+    EXEC  --> ABORT : clearance violation
+    DONE  --> IDLE  : cool-down complete
+    ABORT --> IDLE  : abort cleared
+
+    note right of ABORT : Race control override may<br/>force Aborted from any state
 ```
 
 #### State semantics
