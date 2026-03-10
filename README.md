@@ -132,11 +132,9 @@ stateDiagram-v2
 | Idle | Faster attacker identifies eligible pass zone, attacker self state is `STATE_NOMINAL`, and found no conflicting reservation | Requesting | Populate `target_car_id`, `pass_zone_id`, `yield_speed`, `request_ttl_ms`, increment `pass_sequence`, broadcast request. |
 | Requesting | TTL expires or defender remains in `PASS_STATE_IDLE` | Idle | Clear defender metadata, observe cool-down before reissuing. |
 | Requesting | Matching `PASS_STATE_ACKNOWLEDGED` received | Acknowledged | Reserve zone, synchronise approach speed, rebroadcast state. |
-| Requesting | Defender heartbeat lost before acknowledgement | Aborted | Broadcast `PASS_STATE_ABORTED`, follow abort profile in-lane. |
-| Requesting | Hazard, rule violation, or race-control override detected | Aborted | Broadcast `PASS_STATE_ABORTED`, follow abort profile in-lane. |
+| Requesting | Defender heartbeat lost, hazard, rule violation, or race-control override | Aborted | Broadcast `PASS_STATE_ABORTED`, follow abort profile in-lane. |
 | Acknowledged | Attacker reaches zone entry with defender ready metadata present | Executing | The defender has sent executing, and attacker has passed the zone entry. |
-| Acknowledged | Hazard, rule violation, or race-control override detected | Aborted | Broadcast `PASS_STATE_ABORTED`, follow abort profile. |
-| Acknowledged | Defender heartbeat lost before entry | Aborted | Broadcast `PASS_STATE_ABORTED`, follow abort profile. |
+| Acknowledged | Defender heartbeat lost, hazard, rule violation, or race-control override | Aborted | Broadcast `PASS_STATE_ABORTED`, follow abort profile. |
 | Executing | Clear-ahead criteria satisfied before zone exit | Completed | Broadcast `PASS_STATE_COMPLETED`, release zone reservation. |
 | Executing | Clearance violation, defender downgrade, emergency stop, or heartbeat timeout | Aborted | Follow abort profile while maintaining assigned lanes. |
 | Completed | Cool-down interval elapsed and spacing restored | Idle | Reset metadata; ready for fresh request. |
@@ -149,8 +147,7 @@ stateDiagram-v2
 | Idle | Valid request targeting defender, zone matches, defender `STATE_NOMINAL`, no higher-priority constraint, not already defending. Not trailing another vehicle. | Acknowledged | Broadcast `PASS_STATE_ACKNOWLEDGED`, reserve zone, begin staging.|
 | Idle | Hazard, emergency stop, or lane-integrity concern | Aborted | Broadcast `PASS_STATE_ABORTED`, hold lane at abort profile while awaiting clearance. |
 | Acknowledged | Defender enters the zone entry | Prepping | Reduce to `yield_speed`, and lock into the defender line. |
-| Acknowledged | Hazard prior to zone entry | Aborted | Broadcast `PASS_STATE_ABORTED`, hold lane and follow abort profile. |
-| Acknowledged | Attacker heartbeat lost before entry | Aborted | Broadcast `PASS_STATE_ABORTED`, hold lane and follow abort profile. |
+| Acknowledged | Attacker heartbeat lost, hazard, or race-control override prior to zone entry | Aborted | Broadcast `PASS_STATE_ABORTED`, hold lane and follow abort profile. |
 | Prepping | Locked into the defender lane and reduced to `yield_speed` | Executing | Hold defender lane at `yield_speed`, maintain lane discipline. |
 | Prepping | Lost attacker heartbeat | Aborted | Broadcast `PASS_STATE_ABORTED`, hold defender lane and follow abort profile. |
 | Executing | `PASS_STATE_COMPLETED` received and trailing gap safe | Completed | Re-accelerate to race/supervised practice pace, release reservation, return to formation. |
