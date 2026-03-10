@@ -203,17 +203,17 @@ With only two cars on track, several N-vehicle concerns (queueing, mutual exclus
 - Transponder reports from vehicles whose position falls within the pit lane geofence are excluded from passing logic. The on-track vehicle treats them as non-participants for coordination purposes.
 - No state change is required from pit-lane vehicles; position-based filtering is sufficient for Phase 0.
 
-#### Ego entering pit lane
-- Before reaching the pit entrance, ego broadcasts pit intent via the coordination message (see [Simultaneous pit entry protocol](#simultaneous-pit-entry-protocol)) so the other vehicle can react early.
-- When ego transitions onto the pit trajectory (pit entry), any active pass engagement must be aborted (`PASS_STATE_ABORTED`) before entering pit road.
-- Once on the pit trajectory, ego reverts to `PASS_STATE_IDLE` and ceases publishing pass coordination messages. Ego continues publishing AVLT Position messages (including `lat`/`lon`/`vel`/`state`) so the other vehicle can track its pit lane position via geofence filtering.
-- Ego respects pit lane speed limits and is excluded from the passing protocol while in pit.
+#### Entering pit lane
+- Before reaching the pit entrance, the vehicle broadcasts pit intent via the coordination message (see [Simultaneous pit entry protocol](#simultaneous-pit-entry-protocol)) so the other vehicle can react early.
+- When the vehicle transitions onto the pit trajectory (pit entry), any active pass engagement must be aborted (`PASS_STATE_ABORTED`) before entering pit road.
+- Once on the pit trajectory, the vehicle reverts to `PASS_STATE_IDLE` and ceases publishing pass coordination messages. It continues publishing AVLT Position messages (including `lat`/`lon`/`vel`/`state`) so the other vehicle can track its pit lane position via geofence filtering.
+- The vehicle respects pit lane speed limits and is excluded from the passing protocol while in pit.
 
-#### Ego leaving pit lane
-- Ego must be in `PASS_STATE_IDLE` before exiting pit lane onto the racing surface.
-- After pit exit, ego resumes transponder coordination and may initiate or receive pass requests once it reaches a valid passing zone.
-- A cool-down period applies after pit exit before ego may issue a pass request, preventing immediate engagement while merging onto the racing surface.
-- If the on-track vehicle is approaching the pit exit zone while ego is merging out, the on-track vehicle has right-of-way. Ego does not merge onto the racing surface until the on-track vehicle's transponder position has cleared the pit exit region.
+#### Leaving pit lane
+- The vehicle must be in `PASS_STATE_IDLE` before exiting pit lane onto the racing surface.
+- After pit exit, the vehicle resumes transponder coordination and may initiate or receive pass requests once it reaches a valid passing zone.
+- A cool-down period applies after pit exit before the vehicle may issue a pass request, preventing immediate engagement while merging onto the racing surface.
+- If the on-track vehicle is approaching the pit exit zone while the pitting vehicle is merging out, the on-track vehicle has right-of-way. The pitting vehicle does not merge onto the racing surface until the on-track vehicle's transponder position has cleared the pit exit region.
 
 #### Simultaneous pit entry protocol
 When both vehicles intend to pit at the same time, a formal spacing protocol prevents conflicts in pit road and pit lane.
@@ -239,7 +239,7 @@ When both vehicles intend to pit at the same time, a formal spacing protocol pre
 
 **Abort / cancel:**
 - If a vehicle that announced pit intent cancels (e.g., returns to the racing line before entering the pit entrance geofence), the trailing vehicle exits pit spacing mode and resumes normal on-track behavior.
-- Any active on-track pass engagement must be aborted (`PASS_STATE_ABORTED`) before either vehicle enters pit road (see [Ego entering pit lane](#ego-entering-pit-lane)).
+- Any active on-track pass engagement must be aborted (`PASS_STATE_ABORTED`) before either vehicle enters pit road (see [Entering pit lane](#entering-pit-lane)).
 
 ### Emergency stop coordination
 - Emergency stops trigger only on a transition into `STATE_EMERGENCY_STOP`; each listener latches the initiating `car_id` and message `header.stamp` as the stop event.
@@ -256,10 +256,10 @@ When both vehicles intend to pit at the same time, a formal spacing protocol pre
 ### Stationary bogie on track (Phase 0)
 A bogie may stop on the racing surface (mechanical failure, spin, or crash) yet continue publishing `STATE_NOMINAL` because its software has not detected the fault. Phase 0 applies a conservative policy:
 
-- If a rival vehicle's transponder reports `STATE_NOMINAL` but its reported `vel` remains below a configurable threshold (e.g., < 0.5 m/s) for a sustained period, ego treats the situation as ambiguous.
-- **Ego does NOT attempt to pass a stationary bogie.** Ego holds formation behind the stopped vehicle at a safe following distance and awaits race control intervention.
-- If a pass was already in progress when the bogie became stationary, ego broadcasts `PASS_STATE_ABORTED` and follows the abort profile.
-- If the bogie is off the racing surface (position outside the track geofence) but still publishing, the geofence filter excludes it from coordination logic and ego proceeds normally along its trajectory.
+- If a rival vehicle's transponder reports `STATE_NOMINAL` but its reported `vel` remains below a configurable threshold (e.g., < 0.5 m/s) for a sustained period, the vehicle treats the situation as ambiguous.
+- **The vehicle does NOT attempt to pass a stationary bogie.** It holds formation behind the stopped vehicle at a safe following distance and awaits race control intervention.
+- If a pass was already in progress when the bogie became stationary, the vehicle broadcasts `PASS_STATE_ABORTED` and follows the abort profile.
+- If the bogie is off the racing surface (position outside the track geofence) but still publishing, the geofence filter excludes it from coordination logic and the vehicle proceeds normally along its trajectory.
 - Rationale: Without onboard perception to verify the bogie's actual state, passing a vehicle that claims nominal status but is not moving is unsafe. Perception-assisted state verification is deferred to Phase 1.
 
 ### Autonomy guarantees
