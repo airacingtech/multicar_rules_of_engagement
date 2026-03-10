@@ -5,7 +5,7 @@
 
 ## Overview
 
-Two autonomous vehicles share a track during a race or supervised practice session. Before one vehicle (the **attacker**) can overtake the other (the **defender**), they must complete a radio handshake: the attacker asks permission, the defender acknowledges, and both follow pre-agreed speed and lane rules through a designated **pass zone**. If anything goes wrong -- lost radio contact, a hazard, or a race-control directive -- both vehicles fall back to safe, predictable behaviour (abort or suspend) without any human-in-the-loop input. This document specifies the messages, state machine, and rules that make that handshake work.
+Two autonomous vehicles share a track during a race or supervised practice session. Before one vehicle (the **attacker**) can overtake the other (the **defender**), they must complete a radio handshake: the attacker asks permission, the defender acknowledges, and both follow pre-agreed speed and lane rules through a designated **pass zone**. If anything goes wrong -- lost radio contact, a hazard, or a race-control directive -- both vehicles fall back to safe, predictable behaviour (abort) without any human-in-the-loop input. This document specifies the messages, state machine, and rules that make that handshake work.
 
 ## Quick-start: happy-path pass sequence
 
@@ -18,7 +18,7 @@ Two autonomous vehicles share a track during a race or supervised practice sessi
 5. **Both broadcast `PASS_STATE_COMPLETED`** -- the attacker is safely ahead and the required gap is met.
 6. **Cool-down elapses, both return to `PASS_STATE_IDLE`** -- formation rules resume; a new pass may be requested after the cool-down window (`transponder.cooldown_time_to_live_ms`, default 2000 ms).
 
-If any step fails (timeout, lost heartbeat, hazard), the FSM moves to `PASS_STATE_ABORTED` or `PASS_STATE_SUSPENDED` -- see [Abort handling](#abort-handling) and [State semantics](#state-semantics).
+If any step fails (timeout, lost heartbeat, hazard), the FSM moves to `PASS_STATE_ABORTED` -- see [Abort handling](#abort-handling) and [State semantics](#state-semantics).
 
 > **Safety override:** If any vehicle broadcasts `STATE_EMERGENCY_STOP`, every car within radio reach must come to an immediate stop until that state is clear.[^race-control]
 
@@ -62,7 +62,6 @@ uint8 PASS_STATE_PREPPING = 3
 uint8 PASS_STATE_EXECUTING = 4
 uint8 PASS_STATE_COMPLETED = 5
 uint8 PASS_STATE_ABORTED = 6
-uint8 PASS_STATE_SUSPENDED = 7
 ```
 
 ### Field guidance
@@ -87,17 +86,14 @@ stateDiagram-v2
     PASS_STATE_IDLE --> PASS_STATE_REQUESTING: issue_request
     PASS_STATE_REQUESTING --> PASS_STATE_IDLE: ttl_expired_or_no_ack
     PASS_STATE_REQUESTING --> PASS_STATE_ACKNOWLEDGED: ack_received
-    PASS_STATE_REQUESTING --> PASS_STATE_SUSPENDED: defender_heartbeat_loss
+    PASS_STATE_REQUESTING --> PASS_STATE_ABORTED: defender_heartbeat_loss
     PASS_STATE_REQUESTING --> PASS_STATE_ABORTED: hazard_override
     PASS_STATE_ACKNOWLEDGED --> PASS_STATE_EXECUTING: zone_entry_ready
-    PASS_STATE_ACKNOWLEDGED --> PASS_STATE_SUSPENDED: defender_heartbeat_loss
+    PASS_STATE_ACKNOWLEDGED --> PASS_STATE_ABORTED: defender_heartbeat_loss
     PASS_STATE_ACKNOWLEDGED --> PASS_STATE_ABORTED: hazard_override
     PASS_STATE_EXECUTING --> PASS_STATE_COMPLETED: pass_clear
     PASS_STATE_EXECUTING --> PASS_STATE_ABORTED: clearance_or_timeout
     PASS_STATE_COMPLETED --> PASS_STATE_IDLE: cooldown_complete
-    PASS_STATE_SUSPENDED --> PASS_STATE_REQUESTING: heartbeat_resumes
-    PASS_STATE_SUSPENDED --> PASS_STATE_ACKNOWLEDGED: delayed_ack
-    PASS_STATE_SUSPENDED --> PASS_STATE_IDLE: ttl_expired
     PASS_STATE_ABORTED --> PASS_STATE_IDLE: abort_cleared
 ```
 
@@ -110,16 +106,13 @@ stateDiagram-v2
     PASS_STATE_IDLE --> PASS_STATE_ACKNOWLEDGED: request_valid
     PASS_STATE_IDLE --> PASS_STATE_ABORTED: hazard_override
     PASS_STATE_ACKNOWLEDGED --> DEF_PREPPING: defender_enters_zone
-    PASS_STATE_ACKNOWLEDGED --> PASS_STATE_SUSPENDED: attacker_heartbeat_loss
+    PASS_STATE_ACKNOWLEDGED --> PASS_STATE_ABORTED: attacker_heartbeat_loss
     PASS_STATE_ACKNOWLEDGED --> PASS_STATE_ABORTED: hazard_override
     DEF_PREPPING --> PASS_STATE_EXECUTING: yield_speed_and_lane_locked
-    DEF_PREPPING --> PASS_STATE_SUSPENDED: attacker_heartbeat_loss
+    DEF_PREPPING --> PASS_STATE_ABORTED: attacker_heartbeat_loss
     DEF_PREPPING --> PASS_STATE_ABORTED: hazard_override
     PASS_STATE_EXECUTING --> PASS_STATE_COMPLETED: pass_clear
     PASS_STATE_EXECUTING --> PASS_STATE_ABORTED: clearance_violation
-    PASS_STATE_SUSPENDED --> PASS_STATE_ACKNOWLEDGED: heartbeat_resumes
-    PASS_STATE_SUSPENDED --> PASS_STATE_IDLE: ttl_expired_or_cancelled
-    PASS_STATE_SUSPENDED --> DEF_PREPPING: heartbeat_resumes
     PASS_STATE_COMPLETED --> PASS_STATE_IDLE: cooldown_complete
     PASS_STATE_ABORTED --> PASS_STATE_IDLE: abort_cleared
     %% Race control override may force PASS_STATE_ABORTED from any state
@@ -131,8 +124,7 @@ stateDiagram-v2
 - `PASS_STATE_ACKNOWLEDGED`: Request matched with acknowledgement; the zone is reserved and both cars continue at nominal speed until the defender reaches the zone entry.
 - `PASS_STATE_EXECUTING`: The defender is inside the zone on the defender line, attacker vehicle may now overtake.
 - `PASS_STATE_COMPLETED`: Attacker achieved the required gap, both cars broadcast completion, and prepare to return to idle after the cool-down window.
-- `PASS_STATE_ABORTED`: Hazard, rule break, or override forced the abort profile; cars remain in-lane under the abort plan until cleared.
-- `PASS_STATE_SUSPENDED`: Communication degraded but TTL remains valid; cars pause progression and hold formation while connectivity is restored.
+- `PASS_STATE_ABORTED`: Hazard, rule break, heartbeat loss, or override forced the abort profile; cars remain in-lane under the abort plan until cleared.
 
 #### Attacker transitions
 | From | Event / Guard | To | Action |
@@ -140,17 +132,14 @@ stateDiagram-v2
 | Idle | Faster attacker identifies eligible pass zone, attacker self state is `STATE_NOMINAL`, and found no conflicting reservation | Requesting | Populate `target_car_id`, `pass_zone_id`, `yield_speed`, `request_ttl_ms`, increment `pass_sequence`, broadcast request. |
 | Requesting | TTL expires or defender remains in `PASS_STATE_IDLE` | Idle | Clear defender metadata, observe cool-down before reissuing. |
 | Requesting | Matching `PASS_STATE_ACKNOWLEDGED` received | Acknowledged | Reserve zone, synchronise approach speed, rebroadcast state. |
-| Requesting | Defender heartbeat lost before acknowledgement | Suspended | Hold staging lane at nominal speed, continue transmitting request until reconnection or timeout. |
+| Requesting | Defender heartbeat lost before acknowledgement | Aborted | Broadcast `PASS_STATE_ABORTED`, follow abort profile in-lane. |
 | Requesting | Hazard, rule violation, or race-control override detected | Aborted | Broadcast `PASS_STATE_ABORTED`, follow abort profile in-lane. |
 | Acknowledged | Attacker reaches zone entry with defender ready metadata present | Executing | The defender has sent executing, and attacker has passed the zone entry. |
 | Acknowledged | Hazard, rule violation, or race-control override detected | Aborted | Broadcast `PASS_STATE_ABORTED`, follow abort profile. |
-| Acknowledged | Defender heartbeat lost before entry | Suspended | Freeze approach, continue publishing acknowledgement metadata until connectivity returns. |
+| Acknowledged | Defender heartbeat lost before entry | Aborted | Broadcast `PASS_STATE_ABORTED`, follow abort profile. |
 | Executing | Clear-ahead criteria satisfied before zone exit | Completed | Broadcast `PASS_STATE_COMPLETED`, release zone reservation. |
 | Executing | Clearance violation, defender downgrade, emergency stop, or heartbeat timeout | Aborted | Follow abort profile while maintaining assigned lanes. |
 | Completed | Cool-down interval elapsed and spacing restored | Idle | Reset metadata; ready for fresh request. |
-| Suspended | Heartbeat resumes before TTL expiry and no acknowledgement yet | Requesting | Refresh `request_ttl_ms`, reissue request, maintain staging lane. |
-| Suspended | Delayed `PASS_STATE_ACKNOWLEDGED` received | Acknowledged | Resume approach at nominal speed and continue toward the zone. |
-| Suspended | TTL expires without reconnection | Idle | Clear reservation; next attempt must increment `pass_sequence`. |
 | Aborted | Abort profile complete and race control clears | Idle | Reset metadata and increment `pass_sequence` for future requests. |
 
 
@@ -161,14 +150,11 @@ stateDiagram-v2
 | Idle | Hazard, emergency stop, or lane-integrity concern | Aborted | Broadcast `PASS_STATE_ABORTED`, hold lane at abort profile while awaiting clearance. |
 | Acknowledged | Defender enters the zone entry | Prepping | Reduce to `yield_speed`, and lock into the defender line. |
 | Acknowledged | Hazard prior to zone entry | Aborted | Broadcast `PASS_STATE_ABORTED`, hold lane and follow abort profile. |
-| Acknowledged | Attacker heartbeat lost before entry | Suspended | Maintain current lane and nominal speed, rebroadcast acknowledgement metadata until expiry. |
+| Acknowledged | Attacker heartbeat lost before entry | Aborted | Broadcast `PASS_STATE_ABORTED`, hold lane and follow abort profile. |
 | Prepping | Locked into the defender lane and reduced to `yield_speed` | Executing | Hold defender lane at `yield_speed`, maintain lane discipline. |
-| Prepping | Lost attacker heartbeat | Suspended | Freeze approach, continue publishing prepping state until connectivity returns. |
+| Prepping | Lost attacker heartbeat | Aborted | Broadcast `PASS_STATE_ABORTED`, hold defender lane and follow abort profile. |
 | Executing | `PASS_STATE_COMPLETED` received and trailing gap safe | Completed | Re-accelerate to race/supervised practice pace, release reservation, return to formation. |
 | Executing | Clearance violation, hazard, or vehicle-state downgrade | Aborted | Follow abort profile in defender lane until cleared. |
-| Suspended | Heartbeat resumes before TTL expiry | Acknowledged | Resume staging with latest metadata. |
-| Suspended | TTL expires or race control cancels engagement | Idle | Release reservation, revert to formation mode. |
-| Suspended | Heartbeat resumes | Prepping | Continue staging with latest metadata. |
 | Any | Race-control override or emergency stop | Aborted | Enforce abort profile and await clearance. |
 | Aborted | Abort profile complete and clearance granted | Idle | Reset metadata; ready to evaluate future requests. |
 
@@ -179,7 +165,7 @@ With only two cars on track, several N-vehicle concerns (queueing, mutual exclus
 - Zone reservation: Only one engagement per `pass_zone_id` at a time. With two vehicles this is trivially satisfied -- the single pair either holds the reservation or does not.
 - Zone certification: Pass-zone metadata defines supported clearance envelopes; only zones with adequate lateral clearance may be requested.
 - Zone discipline: Yield-speed profiles are restricted to the configured zone boundaries; lane changes are allowed outside the zone provided they respect spacing and track rules.
-- Heartbeat awareness: If a car stops transmitting heartbeat messages, the pending request referencing it stays on hold until heartbeats resume. Requests expiring before reconnection must be resubmitted.
+- Heartbeat awareness: If a car stops transmitting heartbeat messages, any active engagement is aborted (`PASS_STATE_ABORTED`). A new request must be issued after cool-down once heartbeats resume.
 - Abort lane discipline: Pass-zone configurations define the abort profile and lane assignments; both vehicles hold their current lanes (attacker in the passing lane, defender in the defender lane) until the zone clears.
 - Cool-down enforcement: After a completion or abort, both participants stay in `PASS_STATE_IDLE` for the shared cool-down window (configured via `transponder.cooldown_time_to_live_ms`, default 2000 ms) before a new pass may be requested.
 - Simultaneous requests: If both vehicles issue `PASS_STATE_REQUESTING` targeting each other in the same cycle, the vehicle with the lower `car_id` wins and the other reverts to `PASS_STATE_IDLE`. This deterministic tie-break prevents deadlock without requiring additional negotiation.
@@ -250,7 +236,7 @@ A bogie may stop on the racing surface (mechanical failure, spin, or crash) yet 
 ### Autonomy guarantees
 - Transitions rely only on telemetry, onboard autonomy outputs, and the AVLT coordination message; no manual operator input is needed once the race/supervised practice starts.
 - Race control overrides (`STATE_CONTROLLED_STOP`[track red or vehicle red flag] or `STATE_EMERGENCY_STOP`[purple flag]) force an immediate move to `PASS_STATE_ABORTED`.
-- Connectivity-aware policies ensure cars falling outside the V2V envelope (range TBD, track-dependent) pause the manoeuvre in `PASS_STATE_SUSPENDED` or abort if reconnection misses the timeout, preventing blind passes.
+- Connectivity-aware policies ensure cars falling outside the V2V envelope (range TBD, track-dependent) abort the manoeuvre (`PASS_STATE_ABORTED`), preventing blind passes.
 - Formal verification should confirm every path completes or aborts with a deterministic resolution so neither vehicle can livelock in the same zone. Phase 2 extends this guarantee to N vehicles.
 
 ---
@@ -260,9 +246,9 @@ A bogie may stop on the racing surface (mechanical failure, spin, or crash) yet 
 ### Phase 1: Robustness & Hardening
 The next priority after Phase 0 is making the 2-vehicle system resilient to real-world communication and timing issues.
 
-- Heartbeat loss detection and `PASS_STATE_SUSPENDED` recovery logic
+- Introduce `PASS_STATE_SUSPENDED` for graceful recovery from transient heartbeat loss (Phase 0 aborts on any heartbeat loss)
 - Delayed acknowledgment handling and packet loss recovery
-- Connectivity-aware state transitions (automatic suspend/resume based on link quality)
+- Connectivity-aware state transitions (automatic suspend/resume based on link quality instead of immediate abort)
 - Abort propagation validation between both vehicles
 - Full cool-down enforcement with configurable timers
 - Formal verification that every FSM path terminates in `IDLE` or `ABORTED`
@@ -296,7 +282,7 @@ Phase 2 scales the system to three or more vehicles on track simultaneously. Det
 | **Geofence** | A geographic boundary (polygon or corridor) used to classify whether a vehicle is on the racing surface, in the pit lane, or off-track. |
 | **TTL (Time-to-live)** | `request_ttl_ms` -- the deadline (relative to `header.stamp`) after which an unanswered pass request expires and the attacker reverts to idle. |
 | **Cool-down** | A mandatory wait period after a pass completes or aborts before a new request may be issued. Configured via `transponder.cooldown_time_to_live_ms` (default 2000 ms). |
-| **Heartbeat** | A rolling counter in the AVLT Position message. If the counter stops incrementing, peers assume the link is degraded and may suspend or abort. |
+| **Heartbeat** | A rolling counter in the AVLT Position message. If the counter stops incrementing, peers assume the link is degraded and abort any active engagement. |
 | **Yield speed** | The reduced speed the defender holds inside the pass zone so the attacker can safely overtake. Carried in the `yield_speed` field. |
 | **Abort profile** | A per-zone set of rules (target speed, lane assignments) that both vehicles follow when a pass is aborted. |
 | **Formation** | The default driving mode when no pass is active: vehicles maintain nominal speed and a safe following distance. |
