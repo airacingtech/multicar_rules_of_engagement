@@ -27,18 +27,39 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Install Chromium dependencies
+        run: sudo apt-get install -y chromium-browser
+
       - name: Install mermaid tools
         run: |
           npm install -g @mermaid-js/mermaid-cli
           npm install -g mermaid-filter
 
-      - name: Generate PDF
+      - name: Configure Puppeteer for CI
         run: |
-          pandoc README.md \
+          cat > /tmp/puppeteer-config.json << 'CONF'
+          {
+            "args": ["--no-sandbox", "--disable-setuid-sandbox"]
+          }
+          CONF
+
+      - name: Pre-render mermaid diagrams
+        run: |
+          mmdc -i README.md -o README.rendered.md \
+            -p /tmp/puppeteer-config.json \
+            -b white
+
+      - name: Generate PDF
+        env:
+          PUPPETEER_CHROMIUM_REVISION: 1
+          MERMAID_FILTER_FORMAT: png
+          MERMAID_FILTER_THEME: default
+          MERMAID_FILTER_BACKGROUND: white
+        run: |
+          pandoc README.rendered.md \
             -o multicar_rules_of_engagement.pdf \
             --from markdown+footnotes \
             --pdf-engine=xelatex \
-            -F mermaid-filter \
             --toc \
             -V geometry:margin=1in \
             -V documentclass=article \
