@@ -74,7 +74,17 @@ jobs:
           path: multicar_rules_of_engagement.pdf
           retention-days: 90
 
-      - name: Create or update latest release
+      - name: Create versioned release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION_TAG="v$(date +%Y%m%d)-$(git rev-parse --short HEAD)"
+          gh release create "$VERSION_TAG" \
+            --title "Rules of Engagement $VERSION_TAG" \
+            --notes "Auto-generated PDF from README.md at \`$(git rev-parse --short HEAD)\` ($(date +%Y-%m-%d))." \
+            multicar_rules_of_engagement.pdf
+
+      - name: Update latest release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
