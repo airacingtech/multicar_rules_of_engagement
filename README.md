@@ -3,15 +3,25 @@
 | | |
 |---|---|
 | **Version** | 0.1.0 |
-| **Date** | 2026-03-09 |
+| **Date** | 2026-03-30 |
 | **Status** | Draft |
 
-> **Phase 0 -- 2-Vehicle Bare Bones**
-> This document describes the Phase 0 implementation scope. Only **two vehicles** are permitted on track at any time. The full passing handshake is required, but multi-vehicle coordination features (queueing, mutual exclusion, three-wide prevention) are deferred to later phases. See the [Roadmap](#roadmap) for what comes next.
+> **Phased engagement model.** Every team enters at **Phase 0** (ACC & side-by-side) and progresses through higher phases as capability is demonstrated. Two teams on track together operate at the highest phase supported by *all*. See the [Roadmap](#roadmap) for the full phase list.
 
 ## Overview
 
-Two autonomous vehicles share a track during a race or supervised practice session. Before one vehicle (the **attacker**) can overtake the other (the **defender**), they must complete a radio handshake: the attacker asks permission, the defender acknowledges, and both follow pre-agreed speed and lane rules through a designated **pass zone**. If anything goes wrong -- lost radio contact, a hazard, or a race-control directive -- both vehicles fall back to safe, predictable behaviour (abort) without any human-in-the-loop input. This document specifies the messages, state machine, and rules that make that handshake work.
+Two or more autonomous vehicles share a track during a race or supervised practice session. This document specifies the transponder messages, coordination protocols, and rules of engagement that govern multi-vehicle operation — from basic ACC following (Phase 0) through full passing handshakes (Phase 1) and beyond. If anything goes wrong -- lost radio contact, a hazard, or a race-control directive -- vehicles fall back to safe, predictable behaviour without any human-in-the-loop input.
+
+## Phase 0 — ACC & Side-by-Side Operation
+
+Phase 0 is the entry point for every team. Two vehicles share a track without a passing protocol:
+
+- **ACC following:** When a trailing vehicle closes within transponder range, it matches the lead vehicle's speed and maintains a configurable minimum following distance (`transponder.min_following_distance_m`). No overtaking is permitted.
+- **Side-by-side operation:** Coordinated by race control and the teams. Two vehicles may drive abreast at matched speed under race control direction. The transponder system provides position and speed data to support safe spacing during side-by-side running.
+- **Emergency stop coordination:** If any vehicle broadcasts `STATE_EMERGENCY_STOP`, all vehicles within radio reach stop immediately until cleared.
+- **Pit lane:** Trailing vehicle holds a safe gap behind the lead through pit road and pit lane.
+
+---
 
 ## Quick-start: happy-path pass sequence
 
@@ -79,7 +89,7 @@ uint8 PASS_STATE_ABORTED = 6
 - `pass_sequence` increments whenever a fresh pass is requested so acknowledgements and completions match even if packets drop.
 - `target_vehicle_number`/`pass_zone_id` bind the requester to a specific defender and certified straight defined in the track configuration table, which encodes lane boundaries, speed profiles, clearance envelopes, and abort plans without altering message semantics.
 - `yield_speed` stores the negotiated follow speed with meter-per-second resolution so both vehicles hold the same target once yield mode begins.
-- `request_ttl_ms` is applied against `stamp`; receivers compute `deadline = stamp + request_ttl_ms` and revert to `PASS_STATE_IDLE` after that time. As a `uint16`, the maximum value is 65535 ms (~65 s), which is sufficient for Phase 0 pass engagements.
+- `request_ttl_ms` is applied against `stamp`; receivers compute `deadline = stamp + request_ttl_ms` and revert to `PASS_STATE_IDLE` after that time. As a `uint16`, the maximum value is 65535 ms (~65 s), which is sufficient for Phase 1 pass engagements.
 
 ### Following behaviour (pre-pass)
 When a faster vehicle (the prospective attacker) closes on a slower vehicle (the prospective defender), the following rules apply before any pass request is issued:
@@ -91,7 +101,7 @@ When a faster vehicle (the prospective attacker) closes on a slower vehicle (the
 - **Transition to requesting:** When the trailing vehicle determines it is faster and an eligible pass zone is ahead, it may issue `PASS_STATE_REQUESTING`. Until the defender acknowledges, both vehicles continue following these rules.
 
 ### Autonomous pass state machine
-Each vehicle runs the same finite-state machine keyed by `pass_state`. The attacker is the car that issued the current request, and the defender is the `target_vehicle_number`. The FSM governs overtaking, yielding, and formation behaviour without manual input. In Phase 0 the FSM handles a single attacker-defender pair; later phases scale to multiple competitors through zone reservations and queued requests.
+Each vehicle runs the same finite-state machine keyed by `pass_state`. The attacker is the car that issued the current request, and the defender is the `target_vehicle_number`. The FSM governs overtaking, yielding, and formation behaviour without manual input. In Phase 1 the FSM handles a single attacker-defender pair; later phases scale to multiple competitors through zone reservations and queued requests.
 
 #### Attacker state diagram
 ```mermaid
@@ -185,8 +195,8 @@ stateDiagram-v2
 | Aborted | Abort profile complete and clearance granted | Idle | Reset metadata; ready to evaluate future requests. |
 
 
-### Two-vehicle constraints (Phase 0)
-With only two cars on track, several N-vehicle concerns (queueing, mutual exclusion, three-wide prevention) do not apply. The constraints below are the subset enforced in Phase 0.
+### Two-vehicle constraints (Phase 1)
+With only two cars on track, several N-vehicle concerns (queueing, mutual exclusion, three-wide prevention) do not apply. The constraints below are the subset enforced in Phase 1.
 
 - Zone reservation: Only one engagement per `pass_zone_id` at a time. With two vehicles this is trivially satisfied -- the single pair either holds the reservation or does not.
 - Zone certification: Pass-zone metadata defines supported clearance envelopes; only zones with adequate lateral clearance may be requested.
@@ -196,12 +206,12 @@ With only two cars on track, several N-vehicle concerns (queueing, mutual exclus
 - Cool-down enforcement: After a completion or abort, both participants stay in `PASS_STATE_IDLE` for the shared cool-down window (configured via `transponder.cooldown_time_to_live_ms`, default 2000 ms) before a new pass may be requested.
 - Simultaneous requests: If both vehicles issue `PASS_STATE_REQUESTING` targeting each other in the same cycle, the vehicle with the lower `vehicle_number` wins and the other reverts to `PASS_STATE_IDLE`. This deterministic tie-break prevents deadlock without requiring additional negotiation.
 
-### Pit lane considerations (Phase 0)
+### Pit lane considerations (Phase 1)
 
 #### Filtering pit-lane vehicles from on-track passing logic
 - On-track vehicles use geofence filtering to determine whether a transponder report originates from a car on the active racing surface or in the pit lane.
 - Transponder reports from vehicles whose position falls within the pit lane geofence are excluded from passing logic. The on-track vehicle treats them as non-participants for coordination purposes.
-- No state change is required from pit-lane vehicles; position-based filtering is sufficient for Phase 0.
+- No state change is required from pit-lane vehicles; position-based filtering is sufficient for Phase 1.
 
 #### Entering pit lane
 - Before reaching the pit entrance, the vehicle broadcasts pit intent via the coordination message (see [Simultaneous pit entry protocol](#simultaneous-pit-entry-protocol)) so the other vehicle can react early.
@@ -220,9 +230,9 @@ When both vehicles intend to pit at the same time, a formal spacing protocol pre
 
 **Pit intent signaling (belt-and-suspenders):**
 - A vehicle intending to pit broadcasts a pit intent indicator via the coordination message.
-  - **Phase 0 convention:** The vehicle sets `pass_zone_id` to a reserved pit-zone identifier (defined in the track configuration table, distinct from any on-track pass zone ID) while in `PASS_STATE_IDLE`.
+  - **Phase 1 convention:** The vehicle sets `pass_zone_id` to a reserved pit-zone identifier (defined in the track configuration table, distinct from any on-track pass zone ID) while in `PASS_STATE_IDLE`.
   - **Receiver logic:** Receivers distinguish pit intent from normal idle by checking whether `pass_zone_id` is non-zero and matches a pit-zone entry in the configuration table.
-  - **Phase 1 proposal:** A formal `pit_intent` field or `STATE_PITTING` vehicle state constant replaces this convention.
+  - **Phase 2 proposal:** A formal `pit_intent` field or `STATE_PITTING` vehicle state constant replaces this convention.
 - In addition to the explicit announcement, the trailing vehicle validates pit intent by checking whether the lead vehicle's transponder position enters the pit entrance geofence region.
 - Both signals must agree for the trailing vehicle to enter pit spacing mode. If the lead announces pit intent but its position does not enter the pit entrance geofence within a configurable timeout, the trailing vehicle ignores the announcement and resumes normal behavior.
 
@@ -253,29 +263,29 @@ When both vehicles intend to pit at the same time, a formal spacing protocol pre
 - Participants exchange `PASS_STATE_IDLE` messages once telemetry stabilises, then accelerate back to race/supervised practice pace while maintaining lane discipline.
 - If connectivity stays degraded, cars continue announcing `PASS_STATE_ABORTED` at least 5 Hz so observers know the zone remains restricted.
 
-### Stationary bogie on track (Phase 0)
-A bogie may stop on the racing surface (mechanical failure, spin, or crash) yet continue publishing `STATE_NOMINAL` because its software has not detected the fault. Phase 0 applies a conservative policy:
+### Stationary bogie on track (Phase 1)
+A bogie may stop on the racing surface (mechanical failure, spin, or crash) yet continue publishing `STATE_NOMINAL` because its software has not detected the fault. Phase 1 applies a conservative policy:
 
 - If a rival vehicle's transponder reports `STATE_NOMINAL` but its reported `vel` remains below a configurable threshold (e.g., < 0.5 m/s) for a sustained period, the vehicle treats the situation as ambiguous.
 - **The vehicle does NOT attempt to pass a stationary bogie.** It holds formation behind the stopped vehicle at a safe following distance and awaits race control intervention.
 - If a pass was already in progress when the bogie became stationary, the vehicle broadcasts `PASS_STATE_ABORTED` and follows the abort profile.
 - If the bogie is off the racing surface (position outside the track geofence) but still publishing, the geofence filter excludes it from coordination logic and the vehicle proceeds normally along its trajectory.
-- Rationale: Without onboard perception to verify the bogie's actual state, passing a vehicle that claims nominal status but is not moving is unsafe. Perception-assisted state verification is deferred to Phase 1.
+- Rationale: Without onboard perception to verify the bogie's actual state, passing a vehicle that claims nominal status but is not moving is unsafe. Perception-assisted state verification is deferred to Phase 2.
 
 ### Autonomy guarantees
 - Transitions rely only on telemetry, onboard autonomy outputs, and the AVLT coordination message; no manual operator input is needed once the race/supervised practice starts.
 - Race control overrides (`STATE_CONTROLLED_STOP`[track red or vehicle red flag] or `STATE_EMERGENCY_STOP`[purple flag]) force an immediate move to `PASS_STATE_ABORTED`.
 - Connectivity-aware policies ensure cars falling outside the V2V envelope (range TBD, track-dependent) abort the manoeuvre (`PASS_STATE_ABORTED`), preventing blind passes.
-- Formal verification should confirm every path completes or aborts with a deterministic resolution so neither vehicle can livelock in the same zone. Phase 2 extends this guarantee to N vehicles.
+- Formal verification should confirm every path completes or aborts with a deterministic resolution so neither vehicle can livelock in the same zone. Phase 3 extends this guarantee to N vehicles.
 
 ---
 
 ## Roadmap
 
-### Phase 1: Robustness & Hardening
-The next priority after Phase 0 is making the 2-vehicle system resilient to real-world communication and timing issues.
+### Phase 2: Robustness & Hardening
+Making the 2-vehicle passing system resilient to real-world communication and timing issues.
 
-- Introduce `PASS_STATE_SUSPENDED` for graceful recovery from transient sequence loss (Phase 0 aborts on any sequence loss)
+- Introduce `PASS_STATE_SUSPENDED` for graceful recovery from transient sequence loss (Phase 1 aborts on any sequence loss)
 - Delayed acknowledgment handling and packet loss recovery
 - Connectivity-aware state transitions (automatic suspend/resume based on link quality instead of immediate abort)
 - Abort propagation validation between both vehicles
@@ -284,10 +294,9 @@ The next priority after Phase 0 is making the 2-vehicle system resilient to real
 - Stationary bogie detection with speed-threshold validation and configurable timeouts
 - Perception-assisted state verification (cross-check transponder state against observed behaviour)
 - Formal `pit_intent` field in AVLT Coordination message (or `STATE_PITTING` in Position message)
-- Pit lane spacing enforcement with configurable gap parameters
 
-### Phase 2: N-Vehicle Support (work in progress)
-Phase 2 scales the system to three or more vehicles on track simultaneously. Details will be refined as Phase 1 matures.
+### Phase 3: N-Vehicle Support
+Scales the system to three or more vehicles on track simultaneously.
 
 - 3+ vehicles on track with concurrent pass engagements
 - Zone reservation locking: first pair to reach `PASS_STATE_ACKNOWLEDGED` holds the lock; others queue
